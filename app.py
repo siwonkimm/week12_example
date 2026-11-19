@@ -1,4 +1,4 @@
-"""2025년 대한민국 교통사고 통계 탐색 대시보드.
+"""2025년 대한민국 교통사고 통계 탐색 대시보드 (모션그래픽 적용판).
 
 GitHub 저장소에 이 파일(app.py), requirements.txt, 그리고 아래 CSV 파일 4개를 같은 폴더에 올립니다.
 - 한국도로교통공단_시군구별 월별 교통사고 통계_20251231.csv
@@ -21,6 +21,77 @@ HERE = Path(__file__).parent
 
 st.set_page_config(page_title="2025 교통사고 통계 탐색", layout="wide")
 
+# CSS 모션그래픽: KPI 카드 순차 등장(fadeInUp), 호버 부상, 차트 부드러운 페이드인
+st.markdown(
+    """
+    <style>
+    @keyframes fadeInUp {
+        0% {
+            opacity: 0;
+            transform: translateY(18px);
+        }
+        100% {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @keyframes pulseDot {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.35); opacity: 0.65; }
+    }
+
+    .live-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: rgba(0, 114, 178, 0.10);
+        color: #0072B2;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-bottom: 6px;
+        animation: fadeInUp 0.5s ease-out both;
+    }
+
+    .live-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #D55E00;
+        display: inline-block;
+        animation: pulseDot 1.8s infinite ease-in-out;
+    }
+
+    div[data-testid="stMetric"] {
+        background: rgba(128, 128, 128, 0.06);
+        border: 1px solid rgba(128, 128, 128, 0.18);
+        border-radius: 12px;
+        padding: 16px 18px;
+        animation: fadeInUp 0.6s ease-out both;
+        transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+    }
+
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+        border-color: rgba(0, 114, 178, 0.45);
+    }
+
+    div[data-testid="column"]:nth-of-type(1) div[data-testid="stMetric"] { animation-delay: 0.05s; }
+    div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetric"] { animation-delay: 0.15s; }
+    div[data-testid="column"]:nth-of-type(3) div[data-testid="stMetric"] { animation-delay: 0.25s; }
+
+    div[data-testid="stPlotlyChart"],
+    div[data-testid="stPyplotGlobalUse"] {
+        animation: fadeInUp 0.7s ease-out both;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 FILES = {
     "monthly": "한국도로교통공단_시군구별 월별 교통사고 통계_20251231.csv",
     "region": "한국도로교통공단_시도 시군구별 교통사고 통계_20251231.csv",
@@ -37,6 +108,10 @@ METRIC_OPTIONS = {
 }
 
 DAY_ORDER = ["월", "화", "수", "목", "금", "토", "일"]
+TIME_ORDER = [
+    "00시-02시", "02시-04시", "04시-06시", "06시-08시", "08시-10시", "10시-12시",
+    "12시-14시", "14시-16시", "16시-18시", "18시-20시", "20시-22시", "22시-24시",
+]
 AGE_ORDER = ["12세이하", "13-20세", "21-30세", "31-40세", "41-50세", "51-60세", "61-64세", "65세이상", "불명"]
 
 
@@ -74,7 +149,23 @@ def korean_font():
     return next((f for f in ["Pretendard", "Malgun Gothic", "AppleGothic", "NanumGothic"] if f in names), None)
 
 
-# 제목 및 출처 안내
+def apply_smooth_animation(fig, frame_ms: int = 700, transition_ms: int = 450):
+    """Plotly 애니메이션 재생 속도와 전환 효과를 부드럽게 맞춥니다."""
+    if fig.layout.updatemenus:
+        for button in fig.layout.updatemenus[0].buttons:
+            if button.args and len(button.args) > 1 and isinstance(button.args[1], dict):
+                if "frame" in button.args[1]:
+                    button.args[1]["frame"]["duration"] = frame_ms
+                if "transition" in button.args[1]:
+                    button.args[1]["transition"]["duration"] = transition_ms
+    return fig
+
+
+# 상단 배지 및 제목
+st.markdown(
+    '<div class="live-badge"><span class="live-dot"></span>2025 한국도로교통공단 공공데이터</div>',
+    unsafe_allow_html=True,
+)
 st.title("언제, 어디서, 누구에게 교통사고가 많이 발생하는가")
 st.caption("출처: 한국도로교통공단 교통사고 통계(2025년 12월 31일 기준) · 단위: 사고건수(건), 사상자수(명)")
 
@@ -119,12 +210,35 @@ c2.metric("표시 관측 수 (시군구·월)", f"{len(view):,} 행")
 c3.metric("기간 치사율 (사고 100건당 사망자)", f"{fatality_rate:.2f} %")
 st.caption("치사율은 선택한 기간·지역의 (사망자수 합계 ÷ 사고건수 합계 × 100)으로 계산합니다.")
 
-# 탭 구성: 지역·월별 분석 / 요일·시간대별 / 연령층·성별
+# 탭 구성
 tab1, tab2, tab3 = st.tabs(["지역·월별 분석", "요일·시간대별 패턴", "연령층·성별 사상자"])
 
 with tab1:
-    # 차트 1 (Plotly): 시도별 월별 추이
     monthly_sido = view.groupby(["시도", "발생월"], as_index=False)[metric_col].sum()
+
+    # 모션 차트: 월별 변화 재생(▶) 애니메이션 막대 차트
+    anim_df = monthly_sido.sort_values(["발생월", "시도"]).copy()
+    anim_df["월표시"] = anim_df["발생월"].astype(str) + "월"
+    y_max = max(anim_df[metric_col].max() * 1.18, 1)
+
+    motion_fig = px.bar(
+        anim_df,
+        x="시도",
+        y=metric_col,
+        color="시도",
+        animation_frame="월표시",
+        animation_group="시도",
+        range_y=[0, y_max],
+        text_auto=",.0f",
+        title=f"▶ 월별 시도 {metric_label} 변화 모션 차트 (재생 버튼을 눌러 확인)",
+        labels={"시도": "시도", metric_col: f"{metric_label} ({unit})", "월표시": "월"},
+    )
+    motion_fig.update_layout(showlegend=False)
+    motion_fig.update_traces(textposition="outside")
+    apply_smooth_animation(motion_fig, frame_ms=700, transition_ms=450)
+    st.plotly_chart(motion_fig, width="stretch")
+
+    # 차트 1 (Plotly): 시도별 월별 추이
     trend_fig = px.line(
         monthly_sido.sort_values(["시도", "발생월"]),
         x="발생월",
@@ -180,7 +294,7 @@ with tab1:
     if not kfont:
         st.caption("이 서버에는 한글 글꼴이 없어 가운데 그림(Matplotlib)의 글자를 영어로 표시합니다.")
 
-    # 연간 시군구 TOP 10 (시도 시군구별 CSV 활용)
+    # 연간 시군구 TOP 10
     region_view = df_region[df_region["시도"].isin(selected_sido)].copy()
     region_view["지역"] = region_view["시도"] + " " + region_view["시군구"]
     top10 = region_view.nlargest(10, metric_col).sort_values(metric_col, ascending=True)
@@ -196,8 +310,35 @@ with tab1:
 
 with tab2:
     st.caption("전국 기준 요일·시간대별 통계입니다 (사이드바의 표시 지표가 반영됩니다).")
+
+    # 모션 차트: 시간대 흐름(00시→24시)에 따른 요일별 변화
+    time_anim_df = df_time.copy()
+    time_anim_df["요일"] = pd.Categorical(time_anim_df["요일"], categories=DAY_ORDER, ordered=True)
+    time_anim_df["시간대"] = pd.Categorical(time_anim_df["시간대"], categories=TIME_ORDER, ordered=True)
+    time_anim_df = time_anim_df.sort_values(["시간대", "요일"])
+    t_max = max(time_anim_df[metric_col].max() * 1.18, 1)
+
+    time_motion_fig = px.bar(
+        time_anim_df,
+        x="요일",
+        y=metric_col,
+        color="요일",
+        animation_frame="시간대",
+        animation_group="요일",
+        category_orders={"요일": DAY_ORDER, "시간대": TIME_ORDER},
+        range_y=[0, t_max],
+        text_auto=",.0f",
+        title=f"▶ 시간대별 요일 {metric_label} 변화 모션 차트 (00시 → 24시)",
+        labels={"요일": "요일", metric_col: f"{metric_label} ({unit})", "시간대": "시간대"},
+    )
+    time_motion_fig.update_layout(showlegend=False)
+    time_motion_fig.update_traces(textposition="outside")
+    apply_smooth_animation(time_motion_fig, frame_ms=650, transition_ms=400)
+    st.plotly_chart(time_motion_fig, width="stretch")
+
     pivot = df_time.pivot_table(index="요일", columns="시간대", values=metric_col, aggfunc="sum")
     pivot = pivot.reindex([d for d in DAY_ORDER if d in pivot.index])
+    pivot = pivot[[t for t in TIME_ORDER if t in pivot.columns]]
     heat_fig = px.imshow(
         pivot,
         text_auto=True,
