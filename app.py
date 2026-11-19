@@ -1,139 +1,242 @@
-"""12주차 배포 예제 앱: 11주차 대시보드를 웹에 올릴 수 있게 정리한 판.
+"""2025년 대한민국 교통사고 통계 탐색 대시보드.
 
-GitHub 저장소에 이 파일, requirements.txt, sales.csv를 같은 폴더로 올리고
-Community Cloud의 Main file path에 app.py(하위 폴더에 두었다면 그 경로)를 적습니다.
-개인 프로젝트에서는 sales.csv 대신 출처가 분명한 공개 데이터를 씁니다(수업 예제 데이터 제외).
+GitHub 저장소에 이 파일(app.py), requirements.txt, 그리고 아래 CSV 파일 4개를 같은 폴더에 올립니다.
+- 한국도로교통공단_시군구별 월별 교통사고 통계_20251231.csv
+- 한국도로교통공단_시도 시군구별 교통사고 통계_20251231.csv
+- 한국도로교통공단_요일별 시간대별 교통사고 통계_20251231.csv
+- 한국도로교통공단_사상자 연령층별 성별 교통사고 통계_20251231.csv
+
 내 컴퓨터에서 실행: python -m streamlit run app.py
 """
-# Path: app.py가 있는 폴더를 찾을 때 씁니다. 배포에서 가장 중요한 줄의 재료입니다.
 from pathlib import Path
+import unicodedata
 
-# font_manager: 서버에 한글 글꼴이 있는지 찾을 때 씁니다.
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.express as px
-# streamlit: 앱 화면을 만듭니다. 서버에서도 내 컴퓨터와 똑같이 app.py를 위에서 아래로 실행합니다.
 import streamlit as st
 
-# app.py가 있는 폴더. 배포 서버의 작업 폴더(저장소 맨 위)와 다를 수 있어 파일은 이 폴더 기준으로 찾습니다.
-# __file__은 app.py의 경로, .parent는 그 폴더입니다. 서버에서는 저장소 안 app.py의 폴더가 됩니다.
 HERE = Path(__file__).parent
-COLORS = {"A": "#0072B2", "B": "#D55E00"}
 
-# 브라우저 탭 이름과 넓은 화면을 정합니다.
-st.set_page_config(page_title="지점 실적 탐색", layout="wide")
+st.set_page_config(page_title="2025 교통사고 통계 탐색", layout="wide")
+
+FILES = {
+    "monthly": "한국도로교통공단_시군구별 월별 교통사고 통계_20251231.csv",
+    "region": "한국도로교통공단_시도 시군구별 교통사고 통계_20251231.csv",
+    "time": "한국도로교통공단_요일별 시간대별 교통사고 통계_20251231.csv",
+    "age": "한국도로교통공단_사상자 연령층별 성별 교통사고 통계_20251231.csv",
+}
+
+METRIC_OPTIONS = {
+    "사고건수": ("사고건수", "건", "Accidents"),
+    "사망자수": ("사망자수", "명", "Fatalities"),
+    "중상자수": ("중상자수", "명", "Serious Injuries"),
+    "경상자수": ("경상자수", "명", "Minor Injuries"),
+    "부상신고자수": ("부상신고자수", "명", "Reported Injuries"),
+}
+
+DAY_ORDER = ["월", "화", "수", "목", "금", "토", "일"]
+AGE_ORDER = ["12세이하", "13-20세", "21-30세", "31-40세", "41-50세", "51-60세", "61-64세", "65세이상", "불명"]
 
 
-# 결과를 기억해 두어 위젯을 바꿔도 CSV를 다시 읽지 않습니다.
+def find_csv(filename: str) -> Path:
+    """운영체제별 한글 파일명 정규화(NFC/NFD) 차이를 흡수해 CSV 경로를 찾습니다."""
+    direct = HERE / filename
+    if direct.exists():
+        return direct
+    target = unicodedata.normalize("NFC", filename)
+    for path in HERE.glob("*.csv"):
+        if unicodedata.normalize("NFC", path.name) == target:
+            return path
+    raise FileNotFoundError(filename)
+
+
+def read_korean_csv(filename: str) -> pd.DataFrame:
+    """한국 공공데이터 CSV 인코딩(cp949 / utf-8-sig / euc-kr)을 자동으로 읽어옵니다."""
+    path = find_csv(filename)
+    for enc in ("cp949", "utf-8-sig", "euc-kr", "utf-8"):
+        try:
+            return pd.read_csv(path, encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return pd.read_csv(path)
+
+
 @st.cache_data
-# HERE / "sales.csv": app.py 옆의 파일. C:/Users/… 같은 내 컴퓨터 경로를 쓰면 서버에서 못 찾습니다(1-3).
-def load_data():
-    return pd.read_csv(HERE / "sales.csv")
+def load_all_data() -> dict[str, pd.DataFrame]:
+    return {key: read_korean_csv(name) for key, name in FILES.items()}
 
 
-# Matplotlib은 서버가 그림을 만들어, 서버에 한글 글꼴이 없으면 글자가 □로 나옵니다.
-# 그래서 쓸 수 있는 한글 글꼴을 먼저 찾고, 없으면 None을 돌려줍니다.
 def korean_font():
-    """Matplotlib가 쓸 수 있는 한글 글꼴 이름. 없으면 None(배포 서버에는 없을 수 있습니다)."""
+    """Matplotlib가 쓸 수 있는 한글 글꼴 이름. 없으면 None을 반환합니다."""
     names = {f.name for f in fm.fontManager.ttflist}
     return next((f for f in ["Pretendard", "Malgun Gothic", "AppleGothic", "NanumGothic"] if f in names), None)
 
 
-# 첫 화면에 질문을 제목으로 둡니다(프로젝트 평가: 질문·데이터).
-st.title("어느 지점의 실적이 더 좋은가")
-# 출처, 기간, 단위를 밝힙니다.
-st.caption("출처: 수업용 가상 데이터(sales.csv) · 2026년 1~12월 지점별 월 실적 · 금액 단위: 백만원")
+# 제목 및 출처 안내
+st.title("언제, 어디서, 누구에게 교통사고가 많이 발생하는가")
+st.caption("출처: 한국도로교통공단 교통사고 통계(2025년 12월 31일 기준) · 단위: 사고건수(건), 사상자수(명)")
 
-# 저장소에 sales.csv를 올리지 않았거나 이름이 다르면 오류 대신 안내를 보이고 멈춥니다.
 try:
-    data = load_data()
-except FileNotFoundError:
-    st.error("app.py와 같은 폴더에 sales.csv를 올려 주세요.")
+    datasets = load_all_data()
+except FileNotFoundError as e:
+    st.error(f"app.py와 같은 폴더에 필요한 CSV 파일이 없습니다: {e}")
     st.stop()
 
-# 여기부터 11주차와 같은 위젯 세 개입니다.
+df_monthly = datasets["monthly"]
+df_region = datasets["region"]
+df_time = datasets["time"]
+df_age = datasets["age"]
+
+# 사이드바 조회 조건
 st.sidebar.header("조회 조건")
-# 여러 개 고르기: 고른 지점의 리스트
-branches = st.sidebar.multiselect("지점", ["A", "B"], default=["A", "B"])
-# 범위 슬라이더: (시작 월, 끝 월)
-months = st.sidebar.slider("월 범위", 1, 12, (1, 12))
-# 하나 고르기: 고른 지표 이름
-metric_label = st.sidebar.selectbox("표시 지표", ["매출", "영업이익"])
-# 화면 이름(매출)을 표의 열 이름(sales)으로 바꿉니다.
-metric = {"매출": "sales", "영업이익": "profit"}[metric_label]
+all_sido = df_monthly["시도"].unique().tolist()
+default_sido = [s for s in ["서울", "경기", "부산", "인천", "대구"] if s in all_sido] or all_sido[:5]
+selected_sido = st.sidebar.multiselect("시도 선택", all_sido, default=default_sido)
+months = st.sidebar.slider("발생월 범위", 1, 12, (1, 12))
+metric_label = st.sidebar.selectbox("표시 지표", list(METRIC_OPTIONS.keys()))
+metric_col, unit, metric_en = METRIC_OPTIONS[metric_label]
 
-# 위젯 선택 → view → 숫자·차트·표·CSV가 모두 같은 view를 씁니다.
-# 고른 지점(isin)과 월 범위(between)의 행만 남긴 표입니다.
-view = data.loc[data["branch"].isin(branches) & data["month"].between(months[0], months[1])].copy()
-# 지점을 모두 지우면 view가 빕니다. 안내 뒤 멈추지 않으면 아래 계산에서 오류가 납니다.
+# 선택 조건 필터링
+view = df_monthly.loc[
+    df_monthly["시도"].isin(selected_sido) & df_monthly["발생월"].between(months[0], months[1])
+].copy()
+
 if view.empty:
-    st.warning("표시할 데이터가 없습니다. 지점을 하나 이상 선택하세요.")
+    st.warning("표시할 데이터가 없습니다. 시도를 하나 이상 선택하세요.")
     st.stop()
 
-st.subheader(f"{months[0]}~{months[1]}월 {metric_label} · {', '.join(branches)}지점")
-# 카드 세 개를 나란히 놓습니다.
+# 상단 KPI 카드
+st.subheader(f"{months[0]}~{months[1]}월 {metric_label} · {', '.join(selected_sido)}")
 c1, c2, c3 = st.columns(3)
-c1.metric(f"기간 {metric_label} 합계", f"{view[metric].sum():,.0f} 백만원")
-c2.metric("표시 관측 수", f"{len(view)} 행")
-# 기간 영업이익률 = 기간 이익 합계 ÷ 기간 매출 합계 × 100. 달마다의 비율을 평균 내지 않습니다.
-c3.metric("기간 영업이익률", f"{view['profit'].sum() / view['sales'].sum() * 100:.1f} %")
-st.caption("한 행은 한 달·한 지점입니다. 영업이익률은 기간 이익 합계 ÷ 기간 매출 합계입니다.")
+total_accidents = view["사고건수"].sum()
+total_deaths = view["사망자수"].sum()
+fatality_rate = (total_deaths / total_accidents * 100) if total_accidents > 0 else 0.0
 
-# 차트 1: 월별 추이. Plotly는 보는 사람의 브라우저가 글자를 그려 한글이 그대로 보입니다.
-# 차트 1(Plotly): 보는 사람의 브라우저가 글자를 그려 서버에 글꼴이 없어도 한글이 보입니다.
-trend = px.line(view.sort_values(["branch", "month"]), x="month", y=metric, color="branch",
-                markers=True, color_discrete_map=COLORS, title="월별 추이",
-                labels={"month": "월", metric: f"{metric_label} (백만원)", "branch": "지점"})
-trend.update_xaxes(dtick=1)
-trend.update_yaxes(rangemode="tozero")
+c1.metric(f"기간 {metric_label} 합계", f"{view[metric_col].sum():,.0f} {unit}")
+c2.metric("표시 관측 수 (시군구·월)", f"{len(view):,} 행")
+c3.metric("기간 치사율 (사고 100건당 사망자)", f"{fatality_rate:.2f} %")
+st.caption("치사율은 선택한 기간·지역의 (사망자수 합계 ÷ 사고건수 합계 × 100)으로 계산합니다.")
 
-# 차트 2: 기간 합계. Matplotlib는 서버가 그림을 만들어 서버에 한글 글꼴이 있어야 합니다.
-# 차트 2(Matplotlib): 서버에 한글 글꼴이 있는지 먼저 봅니다.
-kfont = korean_font()
-# 지점별 기간 합계 표
-totals = view.groupby("branch", as_index=False)[metric].sum()
-# 한글 글꼴이 있으면 그 글꼴로, 없으면 기본 글꼴(DejaVu Sans)로 그립니다.
-with plt.rc_context({"font.family": kfont or "DejaVu Sans", "axes.unicode_minus": False}):
-    static_fig, ax = plt.subplots(figsize=(6, 3.6))
-    bars = ax.bar(totals["branch"], totals[metric], color=[COLORS[b] for b in totals["branch"]])
-    ax.bar_label(bars, fmt="%.0f", padding=3)
-    # 한글 글꼴이 있을 때만 한글 제목을 씁니다.
-    if kfont:
-        ax.set(title="기간 합계", xlabel="지점", ylabel=f"{metric_label} (백만원)")
-    else:   # 한글 글꼴이 없는 서버: 글자가 □로 깨지지 않게 영어로 씁니다
-        ax.set(title="Period total", xlabel="Branch", ylabel=f"{metric} (million KRW)")
-    ax.set_ylim(0, max(totals[metric].max() * 1.2, 1))
-    ax.spines[["top", "right"]].set_visible(False)
-    static_fig.tight_layout()
+# 탭 구성: 지역·월별 분석 / 요일·시간대별 / 연령층·성별
+tab1, tab2, tab3 = st.tabs(["지역·월별 분석", "요일·시간대별 패턴", "연령층·성별 사상자"])
 
-# 차트 3: 기간 영업이익률(Plotly)
-# 차트 3(Plotly): 지점별 매출과 이익의 기간 합계로 이익률을 계산합니다.
-period = view.groupby("branch", as_index=False)[["sales", "profit"]].sum()
-period["margin"] = period["profit"] / period["sales"] * 100
-margin_fig = px.bar(period, x="branch", y="margin", color="branch", color_discrete_map=COLORS,
-                    title="기간 영업이익률", labels={"branch": "지점", "margin": "영업이익률 (%)"})
-margin_fig.update_layout(showlegend=False)
-margin_fig.update_yaxes(rangemode="tozero")
+with tab1:
+    # 차트 1 (Plotly): 시도별 월별 추이
+    monthly_sido = view.groupby(["시도", "발생월"], as_index=False)[metric_col].sum()
+    trend_fig = px.line(
+        monthly_sido.sort_values(["시도", "발생월"]),
+        x="발생월",
+        y=metric_col,
+        color="시도",
+        markers=True,
+        title="시도별 월별 추이",
+        labels={"발생월": "월", metric_col: f"{metric_label} ({unit})"},
+    )
+    trend_fig.update_xaxes(dtick=1)
+    trend_fig.update_yaxes(rangemode="tozero")
 
-# 차트 세 개를 세 칸에 나란히 놓습니다(프로젝트 최소 요건: 차트 3개 이상).
-left, middle, right = st.columns(3)
-with left:
-    st.plotly_chart(trend, width="stretch")
-with middle:
-    st.pyplot(static_fig, width="stretch")
-with right:
-    st.plotly_chart(margin_fig, width="stretch")
-# 다 쓴 Matplotlib 그림을 닫습니다.
-plt.close(static_fig)
-# 서버에 한글 글꼴이 없어 영어로 그렸다면 그 사실을 화면에 알립니다.
-if not kfont:
-    st.caption("이 서버에는 한글 글꼴이 없어 가운데 그림(Matplotlib)의 글자를 영어로 표시합니다.")
+    # 차트 2 (Matplotlib): 시도별 기간 합계 (서버 한글 글꼴 대응 유지)
+    kfont = korean_font()
+    totals = view.groupby("시도", as_index=False)[metric_col].sum().sort_values(metric_col, ascending=False)
+    with plt.rc_context({"font.family": kfont or "DejaVu Sans", "axes.unicode_minus": False}):
+        static_fig, ax = plt.subplots(figsize=(6, 3.8))
+        x_labels = totals["시도"] if kfont else [f"R{i+1}" for i in range(len(totals))]
+        bars = ax.bar(x_labels, totals[metric_col], color="#0072B2")
+        ax.bar_label(bars, fmt="%.0f", padding=3, fontsize=8)
+        if kfont:
+            ax.set(title="시도별 기간 합계", xlabel="시도", ylabel=f"{metric_label} ({unit})")
+        else:
+            ax.set(title="Period Total by Region", xlabel="Region (ranked)", ylabel=metric_en)
+        ax.set_ylim(0, max(totals[metric_col].max() * 1.2, 1))
+        ax.spines[["top", "right"]].set_visible(False)
+        static_fig.tight_layout()
 
-st.subheader("현재 선택한 데이터")
-# 고른 행(view)을 표로 보입니다.
+    # 차트 3 (Plotly): 시도별 치사율(%)
+    period = view.groupby("시도", as_index=False)[["사고건수", "사망자수"]].sum()
+    period["치사율"] = period["사망자수"] / period["사고건수"] * 100
+    period = period.sort_values("치사율", ascending=False)
+    rate_fig = px.bar(
+        period,
+        x="시도",
+        y="치사율",
+        color="시도",
+        title="시도별 치사율 (%)",
+        labels={"시도": "시도", "치사율": "치사율 (%)"},
+    )
+    rate_fig.update_layout(showlegend=False)
+    rate_fig.update_yaxes(rangemode="tozero")
+
+    left, middle, right = st.columns(3)
+    with left:
+        st.plotly_chart(trend_fig, width="stretch")
+    with middle:
+        st.pyplot(static_fig, width="stretch")
+    with right:
+        st.plotly_chart(rate_fig, width="stretch")
+    plt.close(static_fig)
+
+    if not kfont:
+        st.caption("이 서버에는 한글 글꼴이 없어 가운데 그림(Matplotlib)의 글자를 영어로 표시합니다.")
+
+    # 연간 시군구 TOP 10 (시도 시군구별 CSV 활용)
+    region_view = df_region[df_region["시도"].isin(selected_sido)].copy()
+    region_view["지역"] = region_view["시도"] + " " + region_view["시군구"]
+    top10 = region_view.nlargest(10, metric_col).sort_values(metric_col, ascending=True)
+    top10_fig = px.bar(
+        top10,
+        x=metric_col,
+        y="지역",
+        orientation="h",
+        title=f"선택 시도 내 연간 {metric_label} 상위 10개 시군구",
+        labels={metric_col: f"{metric_label} ({unit})", "지역": "시군구"},
+    )
+    st.plotly_chart(top10_fig, width="stretch")
+
+with tab2:
+    st.caption("전국 기준 요일·시간대별 통계입니다 (사이드바의 표시 지표가 반영됩니다).")
+    pivot = df_time.pivot_table(index="요일", columns="시간대", values=metric_col, aggfunc="sum")
+    pivot = pivot.reindex([d for d in DAY_ORDER if d in pivot.index])
+    heat_fig = px.imshow(
+        pivot,
+        text_auto=True,
+        aspect="auto",
+        color_continuous_scale="YlOrRd",
+        title=f"요일 × 시간대별 {metric_label} 히트맵",
+        labels={"x": "시간대", "y": "요일", "color": f"{metric_label} ({unit})"},
+    )
+    st.plotly_chart(heat_fig, width="stretch")
+
+with tab3:
+    st.caption("전국 기준 사상자 연령층·성별 통계입니다 (사고건수 제외, 사상자 지표 기준).")
+    age_metric = metric_col if metric_col != "사고건수" else "중상자수"
+    age_unit = "명"
+    if metric_col == "사고건수":
+        st.info("연령층·성별 통계에는 '사고건수' 열이 없어 '중상자수' 기준으로 표시합니다.")
+
+    age_df = df_age.copy()
+    age_df["사상자연령층"] = pd.Categorical(age_df["사상자연령층"], categories=AGE_ORDER, ordered=True)
+    age_df = age_df.sort_values("사상자연령층")
+
+    age_fig = px.bar(
+        age_df,
+        x="사상자연령층",
+        y=age_metric,
+        color="사상자성별",
+        barmode="group",
+        title=f"연령층·성별 {age_metric} 분포",
+        labels={"사상자연령층": "연령층", age_metric: f"{age_metric} ({age_unit})", "사상자성별": "성별"},
+    )
+    st.plotly_chart(age_fig, width="stretch")
+
+# 하단 데이터 테이블 및 CSV 다운로드
+st.subheader("현재 선택한 지역·월별 데이터")
 st.dataframe(view, hide_index=True, width="stretch")
-# 지금 고른 데이터를 CSV로 내려받습니다. utf-8-sig는 엑셀 한글 깨짐을 막습니다.
-st.download_button("현재 선택 CSV 저장", data=view.to_csv(index=False).encode("utf-8-sig"),
-                   file_name="selected_sales.csv", mime="text/csv")
-st.caption("이 자료만으로 실적 변화의 원인을 단정하지 않습니다.")
+st.download_button(
+    "현재 선택 CSV 저장",
+    data=view.to_csv(index=False).encode("utf-8-sig"),
+    file_name="selected_traffic_accidents.csv",
+    mime="text/csv",
+)
+st.caption("이 자료는 집계 통계이며, 지역별 인구·통행량 차이를 고려하지 않으므로 사고 원인을 단정하지 않습니다.")
